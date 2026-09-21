@@ -124,6 +124,29 @@ processors:
           - set(name, "container.cpu.cfs.periods")           where name == "container_cpu_cfs_periods"
           - set(name, "container.cpu.usage.cadvisor")        where name == "container_cpu_usage_seconds"
 
+  # Dynatrace's OTLP metrics endpoint silently drops Sum[monotonic] (cumulative
+  # counter) metrics: no error is raised anywhere, the data simply never lands in
+  # Grail. Converting them to delta temporality makes them ingestible.
+  # Confirmed empirically on this tenant -- over a 2h window the Gauge
+  # k8s.pod.cpu.usage arrived (58 pts) while its Sum[monotonic] twin
+  # k8s.pod.cpu.time, plus k8s.pod.network.io, k8s.pod.network.errors and
+  # container.cpu.time, were entirely absent. config/host.yaml already relies on
+  # this processor, and its monotonic sums (system.cpu.time, process.cpu.time) do
+  # arrive. The cAdvisor pipeline solves the same problem differently, by
+  # stripping _total so Prometheus yields Gauge -- hence no processor there.
+  #
+  # Non-monotonic sums and gauges are passed through untouched, so this is a
+  # no-op for every other metric in this pipeline.
+  #
+  # max_staleness is deliberately far shorter than host.yaml's 25h. host.yaml
+  # needs 25h because it has a 1h-interval hostmetrics scraper whose state must
+  # survive gaps > 1h. kubeletstats scrapes every 60s and its series are pod- and
+  # container-scoped, so 25h would pin per-series state for every pod that has
+  # since been deleted -- unbounded growth against the 256 MiB memory_limiter.
+  # 5m tolerates ~4 missed scrapes, which is all this interval needs.
+  cumulativetodelta:
+    max_staleness: 5m
+
   batch:
     timeout: 10s
     send_batch_size: 1000
@@ -141,7 +164,7 @@ service:
   pipelines:
     metrics/kubeletstats:
       receivers: [kubeletstats]
-      processors: [memory_limiter, k8sattributes, transform/workload_dims, batch]
+      processors: [memory_limiter, k8sattributes, transform/workload_dims, cumulativetodelta, batch]
       exporters: [otlphttp, debug]
     metrics/cadvisor:
       receivers: [prometheus/cadvisor]
