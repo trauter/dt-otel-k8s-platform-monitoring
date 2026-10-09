@@ -99,9 +99,10 @@ metrics enrichment, or metric IDs point at entities that don't exist. The
 component *name* is part of the hash, not just the value:
 
 * Workloads (deployment/statefulset/daemonset/replicaset): `k8s.cluster.uid`,
-  `k8s.namespace.name`, **`k8s.workload.name`** (referencedFieldName = the
-  type-specific `k8s.<type>.name`). Naming the component `k8s.deployment.name`
-  gives a different ID.
+  `k8s.namespace.name`, **`k8s.workload.kind`**, **`k8s.workload.name`**, and
+  the matcher is gated on `k8s.workload.kind == "<type>"`. Using
+  `k8s.deployment.name` as the component (or dropping the kind) gives a
+  different ID. Side effect: deployment-owned pods have no pod→ReplicaSet edge.
 * CONTAINER: `k8s.cluster.uid`, `k8s.pod.uid`, `k8s.container.name`.
 * Cluster/namespace/node/pod/service: component name == field name.
 

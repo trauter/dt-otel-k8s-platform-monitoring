@@ -163,12 +163,14 @@ don't exist:
 |---|---|
 | `K8S_CLUSTER` | `k8s.cluster.uid` |
 | `K8S_NAMESPACE` / `K8S_NODE` / `K8S_SERVICE` | `k8s.cluster.uid`, `k8s.<type>.name` |
-| `K8S_DEPLOYMENT` / `STATEFULSET` / `DAEMONSET` / `REPLICASET` | `k8s.cluster.uid`, `k8s.namespace.name`, **`k8s.workload.name` ← `k8s.<type>.name`** |
+| `K8S_DEPLOYMENT` / `STATEFULSET` / `DAEMONSET` / `REPLICASET` | `k8s.cluster.uid`, `k8s.namespace.name`, **`k8s.workload.kind`**, **`k8s.workload.name`** |
 | `K8S_POD` | `k8s.cluster.uid`, `k8s.pod.uid` |
 | `CONTAINER` | `k8s.cluster.uid`, `k8s.pod.uid`, `k8s.container.name` |
 
-The workload component is named `k8s.workload.name` regardless of type. Naming
-it after the field (`k8s.deployment.name`) yields a different hash.
+Workload IDs hash the record's `k8s.workload.kind` and `k8s.workload.name`, so
+each workload processor matches only `k8s.workload.kind == "<type>"`. As a
+consequence, a deployment-owned pod (kind `deployment`) gets an `is_part_of`
+edge to its deployment but not to its ReplicaSet.
 
 `CONTAINER` is the native Dynatrace type, not a custom one. `k8s.object` (the
 full serialized API object) is extracted for every type except `CONTAINER` and
