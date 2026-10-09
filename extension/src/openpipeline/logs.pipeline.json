@@ -179,7 +179,7 @@
               "referencedFieldName": "k8s.namespace.name"
             },
             {
-              "idComponent": "k8s.deployment.name",
+              "idComponent": "k8s.workload.name",
               "referencedFieldName": "k8s.deployment.name"
             }
           ],
@@ -255,7 +255,7 @@
               "referencedFieldName": "k8s.namespace.name"
             },
             {
-              "idComponent": "k8s.statefulset.name",
+              "idComponent": "k8s.workload.name",
               "referencedFieldName": "k8s.statefulset.name"
             }
           ],
@@ -331,7 +331,7 @@
               "referencedFieldName": "k8s.namespace.name"
             },
             {
-              "idComponent": "k8s.daemonset.name",
+              "idComponent": "k8s.workload.name",
               "referencedFieldName": "k8s.daemonset.name"
             }
           ],
@@ -407,7 +407,7 @@
               "referencedFieldName": "k8s.namespace.name"
             },
             {
-              "idComponent": "k8s.replicaset.name",
+              "idComponent": "k8s.workload.name",
               "referencedFieldName": "k8s.replicaset.name"
             }
           ],
@@ -586,12 +586,16 @@
         "id": "extract-container",
         "enabled": true,
         "description": "Extract CONTAINER from KUBERNETES_OTEL_TOPO events",
-        "matcher": "isNotNull(k8s.pod.uid) and isNotNull(k8s.container.name)",
+        "matcher": "isNotNull(k8s.cluster.uid) and isNotNull(k8s.pod.uid) and isNotNull(k8s.container.name)",
         "smartscapeNode": {
           "nodeType": "CONTAINER",
           "nodeIdFieldName": "dt.smartscape.container",
           "extractNode": true,
           "idComponents": [
+            {
+              "idComponent": "k8s.cluster.uid",
+              "referencedFieldName": "k8s.cluster.uid"
+            },
             {
               "idComponent": "k8s.pod.uid",
               "referencedFieldName": "k8s.pod.uid"
