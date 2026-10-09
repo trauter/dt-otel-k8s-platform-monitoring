@@ -71,6 +71,23 @@ processors:
       - sources:
           - from: resource_attribute
             name: k8s.pod.uid
+      # Static pods: transform/static_pod_uid drops the kubelet's config-hash UID,
+      # so fall back to name+namespace and let k8s.pod.uid be filled with the
+      # mirror pod's API UID (the one the topology pull and k8s_cluster use).
+      - sources:
+          - from: resource_attribute
+            name: k8s.pod.name
+          - from: resource_attribute
+            name: k8s.namespace.name
+
+  # kubeletstats reports static pods (e.g. kube-proxy) under the kubelet's internal
+  # UID — the 32-hex config hash — not the API UID. Smartscape pod/container IDs
+  # hash k8s.pod.uid, so those data points would point at entities that don't exist.
+  transform/static_pod_uid:
+    metric_statements:
+      - context: resource
+        statements:
+          - delete_key(attributes, "k8s.pod.uid") where attributes["k8s.pod.uid"] != nil and IsMatch(attributes["k8s.pod.uid"], "^[0-9a-f]{32}$")
 
   transform/workload_dims:
     metric_statements:
@@ -177,7 +194,7 @@ service:
   pipelines:
     metrics/kubeletstats:
       receivers: [kubeletstats]
-      processors: [memory_limiter, k8sattributes, transform/workload_dims, cumulativetodelta, batch]
+      processors: [memory_limiter, transform/static_pod_uid, k8sattributes, transform/workload_dims, cumulativetodelta, batch]
       exporters: [otlphttp, debug]
     metrics/cadvisor:
       receivers: [prometheus/cadvisor]
