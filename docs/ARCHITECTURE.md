@@ -45,13 +45,13 @@ flowchart TB
             R2["k8s_objects/topology<br/>pull, 120s"]
             R3["k8s_objects/events<br/>watch"]
 
-            P1["transform/workload_dims<br/>transform/openpipeline_source_metrics"]
+            P1["transform/workload_dims"]
             P2["transform/topology → groupbyattrs/pod →<br/>k8sattributes → dtk8stopology →<br/>transform/openpipeline_source_logs"]
             P3["transform/k8sevents → dtk8seventsprocessor →<br/>transform/openpipeline_source_logs"]
         end
 
         subgraph DS["dt-otelcol-agent (DaemonSet)"]
-            R4["kubeletstats / hostmetrics"]
+            R4["kubeletstats → transform/static_pod_uid →<br/>k8sattributes / hostmetrics"]
         end
     end
 
@@ -150,6 +150,7 @@ flowchart LR
     POD -->|runs_on| ND
     POD -->|is_part_of| W
     CON -->|is_part_of| POD & W
+    W -->|"is_part_of (RS → Deployment)"| W
     CON -->|belongs_to| C & NS
     CON -->|runs_on| ND
 ```
@@ -170,16 +171,29 @@ don't exist:
 Workload IDs hash the record's `k8s.workload.kind` and `k8s.workload.name`, so
 each workload processor matches only `k8s.workload.kind == "<type>"`.
 
-A deployment-owned pod's record carries kind `deployment`, yet it also needs
-its ReplicaSet's ID for the `is_part_of` edge. ID components can only reference
-fields, so the processing stage adds the constant
-`k8s_otel.replicaset_kind = "replicaset"` and `enrich-k8s-replicaset-owner`
-uses it as the kind input. The field stays on stored topology records, because
-the storage stage cannot remove fields.
+Some records also need the ID of an *owner* of a different kind, for an
+`is_part_of` edge. A deployment-owned pod or container record has kind
+`deployment` but needs its ReplicaSet's ID. A ReplicaSet record (whose
+`k8s.deployment.name` the collector sets from `ownerReferences`) has kind
+`replicaset` but needs its Deployment's ID. ID components can only reference
+fields, so the processing stage adds constants for the hash:
 
-Pod and container edges match the ActiveGate model. Known gaps: no
-ReplicaSet → Deployment edge (the ReplicaSet record lacks its owner's name),
-and no Job/CronJob/ConfigMap/Secret/PVC entities.
+| Helper field | Added where | Used by |
+|---|---|---|
+| `k8s_otel.replicaset_kind = "replicaset"` | `k8s.replicaset.name` set, kind ≠ replicaset | `enrich-k8s-replicaset-owner` |
+| `k8s_otel.deployment_kind = "deployment"` | `k8s.deployment.name` set, kind ≠ deployment | `enrich-k8s-deployment-owner` |
+
+These fields are ID inputs only. They stay on stored topology records, because
+the storage stage allows only `bucketAssignment`/`noStorage`.
+
+Pod, container and ReplicaSet edges match the ActiveGate model. Known gap: no
+Job/CronJob/ConfigMap/Secret/PVC entities, so the pod edges to them are missing.
+
+Static pods (e.g. `kube-proxy`) need a fix on the metrics side as well: `kubeletstats`
+reports them under the kubelet's config-hash UID, not the mirror pod's API UID,
+so their pod/container IDs would point at entities that don't exist.
+`transform/static_pod_uid` drops the hash UID, and `k8sattributes` re-fills
+`k8s.pod.uid` by pod name + namespace.
 
 `CONTAINER` is the native Dynatrace type, not a custom one. `k8s.object` (the
 full serialized API object) is extracted for every type except `CONTAINER` and

@@ -103,11 +103,16 @@ component *name* is part of the hash, not just the value:
   the matcher is gated on `k8s.workload.kind == "<type>"`. Using
   `k8s.deployment.name` as the component (or dropping the kind) gives a
   different ID.
-* Owner ReplicaSet on pod/container records: those records carry
-  `k8s.workload.kind = deployment`, so the processing stage adds
-  `k8s_otel.replicaset_kind = "replicaset"` and `enrich-k8s-replicaset-owner`
-  hashes it in place of the kind. It's an ID input only; it stays on stored records
-  because the storage stage only allows `bucketAssignment`/`noStorage`.
+* Owner IDs for `is_part_of` edges to a different kind (pod/container → ReplicaSet,
+  ReplicaSet → Deployment): the processing stage adds constant helper fields
+  `k8s_otel.replicaset_kind` / `k8s_otel.deployment_kind`, and
+  `enrich-k8s-replicaset-owner` / `enrich-k8s-deployment-owner` hash them in
+  place of the record's own kind. They're ID inputs only; they stay on stored
+  records because the storage stage only allows `bucketAssignment`/`noStorage`.
+* Static pods (kube-proxy): `kubeletstats` reports the kubelet config-hash UID.
+  `transform/static_pod_uid` (DaemonSet) drops it, so `k8sattributes` re-fills
+  the API UID by name + namespace. Without that, pod/container IDs on those
+  metrics point at entities that don't exist.
 * CONTAINER: `k8s.cluster.uid`, `k8s.pod.uid`, `k8s.container.name`.
 * Cluster/namespace/node/pod/service: component name == field name.
 

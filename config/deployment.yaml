@@ -220,6 +220,9 @@ processors:
           - set(attributes["k8s.namespace.name"], body["metadata"]["namespace"]) where attributes["k8s.resource.name"] == "replicasets"
           - set(attributes["k8s.workload.name"], body["metadata"]["name"]) where attributes["k8s.resource.name"] == "replicasets"
           - set(attributes["k8s.workload.kind"], "replicaset") where attributes["k8s.resource.name"] == "replicasets"
+          # Owning Deployment, for the ReplicaSet → Deployment edge. Guarded so it never
+          # indexes a missing/empty ownerReferences list (and short-circuits).
+          - set(attributes["k8s.deployment.name"], body["metadata"]["ownerReferences"][0]["name"]) where attributes["k8s.resource.name"] == "replicasets" and IsList(body["metadata"]["ownerReferences"]) and Len(body["metadata"]["ownerReferences"]) > 0 and body["metadata"]["ownerReferences"][0]["kind"] == "Deployment"
           # Service
           - set(attributes["k8s.topo.node.type"], "K8S_SERVICE") where attributes["k8s.resource.name"] == "services"
           - set(attributes["k8s.service.name"], body["metadata"]["name"]) where attributes["k8s.resource.name"] == "services"

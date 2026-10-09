@@ -68,7 +68,7 @@ containers.
 |---|---|---|
 | Cluster / namespace / node / workload / service entities + edges + `k8s.object` | ✅ OTTL + `k8sattributes` + OpenPipeline | ✅ same |
 | Pod → top-level workload edges (RS→Deployment, Job→CronJob) | ✅ `k8sattributes` | ✅ same |
-| Container entities (minimal node) | ✅ metrics pipeline (`extractNode: true`) | ✅ same |
+| Container entities (minimal node) | ✅ topology logs pipeline (`extract-container`) | ✅ same |
 | `k8s.container.image` on CONTAINER nodes | ❌ | ✅ `dtk8stopology` |
 | K8s Events → `KUBERNETES_EVENT` Davis records | ✅ `transform/k8sevents` OTTL | ✅ + per-entity/cluster throttle |
 | OOM-kill → `KUBERNETES_INFERRED_EVENT` | ❌ | ✅ `dtk8seventsprocessor` |
