@@ -2,6 +2,26 @@
   "customId": "k8s-otel-logs",
   "displayName": "K8s OTel Logs: Topology + Events",
   "metadataList": [],
+  "processing": {
+    "processors": [
+      {
+        "type": "fieldsAdd",
+        "id": "add-replicaset-id-input",
+        "enabled": true,
+        "description": "Built-in K8S_REPLICASET IDs hash the literal kind \"replicaset\"; pod/container records of deployment-owned pods carry kind=deployment, so supply it for the owner-ReplicaSet ID lookup. Stays on the stored record: the storage stage cannot remove fields.",
+        "matcher": "isNotNull(k8s.replicaset.name) and k8s.workload.kind != \"replicaset\"",
+        "fieldsAdd": {
+          "fields": [
+            {
+              "name": "k8s_otel.replicaset_kind",
+              "value": "replicaset",
+              "valueType": "string"
+            }
+          ]
+        }
+      }
+    ]
+  },
   "smartscapeNodeExtraction": {
     "processors": [
       {
@@ -481,6 +501,38 @@
       },
       {
         "type": "smartscapeNode",
+        "id": "enrich-k8s-replicaset-owner",
+        "enabled": true,
+        "description": "Compute the owning K8S_REPLICASET ID on pod/container records so their is_part_of edges resolve (no node extraction)",
+        "matcher": "isNotNull(k8s.cluster.uid) and isNotNull(k8s.namespace.name) and isNotNull(k8s_otel.replicaset_kind) and isNotNull(k8s.replicaset.name)",
+        "smartscapeNode": {
+          "nodeType": "K8S_REPLICASET",
+          "nodeIdFieldName": "dt.smartscape.k8s_replicaset",
+          "extractNode": false,
+          "idComponents": [
+            {
+              "idComponent": "k8s.cluster.uid",
+              "referencedFieldName": "k8s.cluster.uid"
+            },
+            {
+              "idComponent": "k8s.namespace.name",
+              "referencedFieldName": "k8s.namespace.name"
+            },
+            {
+              "idComponent": "k8s.workload.kind",
+              "referencedFieldName": "k8s_otel.replicaset_kind"
+            },
+            {
+              "idComponent": "k8s.workload.name",
+              "referencedFieldName": "k8s.replicaset.name"
+            }
+          ],
+          "fieldsToExtract": [],
+          "staticEdgesToExtract": []
+        }
+      },
+      {
+        "type": "smartscapeNode",
         "id": "extract-k8s-pod",
         "enabled": true,
         "description": "Extract K8S_POD from KUBERNETES_OTEL_TOPO events",
@@ -689,6 +741,26 @@
               "edgeType": "runs_on",
               "targetType": "K8S_NODE",
               "targetIdFieldName": "dt.smartscape.k8s_node"
+            },
+            {
+              "edgeType": "is_part_of",
+              "targetType": "K8S_DEPLOYMENT",
+              "targetIdFieldName": "dt.smartscape.k8s_deployment"
+            },
+            {
+              "edgeType": "is_part_of",
+              "targetType": "K8S_STATEFULSET",
+              "targetIdFieldName": "dt.smartscape.k8s_statefulset"
+            },
+            {
+              "edgeType": "is_part_of",
+              "targetType": "K8S_DAEMONSET",
+              "targetIdFieldName": "dt.smartscape.k8s_daemonset"
+            },
+            {
+              "edgeType": "is_part_of",
+              "targetType": "K8S_REPLICASET",
+              "targetIdFieldName": "dt.smartscape.k8s_replicaset"
             }
           ]
         }

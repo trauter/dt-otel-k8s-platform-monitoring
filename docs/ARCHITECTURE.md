@@ -149,7 +149,7 @@ flowchart LR
     POD -->|belongs_to| C & NS
     POD -->|runs_on| ND
     POD -->|is_part_of| W
-    CON -->|is_part_of| POD
+    CON -->|is_part_of| POD & W
     CON -->|belongs_to| C & NS
     CON -->|runs_on| ND
 ```
@@ -168,9 +168,18 @@ don't exist:
 | `CONTAINER` | `k8s.cluster.uid`, `k8s.pod.uid`, `k8s.container.name` |
 
 Workload IDs hash the record's `k8s.workload.kind` and `k8s.workload.name`, so
-each workload processor matches only `k8s.workload.kind == "<type>"`. As a
-consequence, a deployment-owned pod (kind `deployment`) gets an `is_part_of`
-edge to its deployment but not to its ReplicaSet.
+each workload processor matches only `k8s.workload.kind == "<type>"`.
+
+A deployment-owned pod's record carries kind `deployment`, yet it also needs
+its ReplicaSet's ID for the `is_part_of` edge. ID components can only reference
+fields, so the processing stage adds the constant
+`k8s_otel.replicaset_kind = "replicaset"` and `enrich-k8s-replicaset-owner`
+uses it as the kind input. The field stays on stored topology records, because
+the storage stage cannot remove fields.
+
+Pod and container edges match the ActiveGate model. Known gaps: no
+ReplicaSet → Deployment edge (the ReplicaSet record lacks its owner's name),
+and no Job/CronJob/ConfigMap/Secret/PVC entities.
 
 `CONTAINER` is the native Dynatrace type, not a custom one. `k8s.object` (the
 full serialized API object) is extracted for every type except `CONTAINER` and

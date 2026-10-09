@@ -102,7 +102,12 @@ component *name* is part of the hash, not just the value:
   `k8s.namespace.name`, **`k8s.workload.kind`**, **`k8s.workload.name`**, and
   the matcher is gated on `k8s.workload.kind == "<type>"`. Using
   `k8s.deployment.name` as the component (or dropping the kind) gives a
-  different ID. Side effect: deployment-owned pods have no pod→ReplicaSet edge.
+  different ID.
+* Owner ReplicaSet on pod/container records: those records carry
+  `k8s.workload.kind = deployment`, so the processing stage adds
+  `k8s_otel.replicaset_kind = "replicaset"` and `enrich-k8s-replicaset-owner`
+  hashes it in place of the kind. It's an ID input only; it stays on stored records
+  because the storage stage only allows `bucketAssignment`/`noStorage`.
 * CONTAINER: `k8s.cluster.uid`, `k8s.pod.uid`, `k8s.container.name`.
 * Cluster/namespace/node/pod/service: component name == field name.
 
