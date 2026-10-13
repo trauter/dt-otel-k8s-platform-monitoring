@@ -85,18 +85,40 @@ together — DT rejects a re-upload of an existing version.
 | File | `customId` | Scope |
 |---|---|---|
 | `logs.pipeline.json` | `k8s-otel-logs` | topology entity extraction (10 types) + `kubernetes.events` counter |
-| `metrics-enrichment.pipeline.json` | `k8s-otel-metrics-enrichment` | `extractNode: false` lookups, plus container extraction |
-| `metrics-extraction.pipeline.json` | `k8s-otel-metrics-extraction` | `extractNode: true` for all 10 types |
-| `metrics.source.json` | — | metrics ingest source, static routing |
 
-### Routing: metrics static, logs by rule
+### Metrics: no extension pipeline
 
-**Metrics** route statically. `transform/openpipeline_source_metrics` stamps
-`dt.openpipeline.source = "custom:dt-k8s-otel-topology"`, the bundled ingest
-source claims it, and `staticRouting.pipelineId` references the pipeline's
-`customId` — so no objectId patching is needed.
+DT's built-in OTel metrics enrichment already attaches `dt.smartscape.*` IDs to
+k8s metric data points. The extension used to ship its own metrics pipelines and
+ingest source; they were removed in 1.3.0 as redundant.
 
-**Logs** need `openpipeline/k8s-logs-routing.yaml`, applied with
+### Entity IDs must match the built-in formula
+
+The logs pipeline must hash the **same idComponent names** as the built-in
+metrics enrichment, or metric IDs point at entities that don't exist. The
+component *name* is part of the hash, not just the value:
+
+* Workloads (deployment/statefulset/daemonset/replicaset): `k8s.cluster.uid`,
+  `k8s.namespace.name`, **`k8s.workload.kind`**, **`k8s.workload.name`**, and
+  the matcher is gated on `k8s.workload.kind == "<type>"`. Using
+  `k8s.deployment.name` as the component (or dropping the kind) gives a
+  different ID.
+* Owner IDs for `is_part_of` edges to a different kind (pod/container → ReplicaSet,
+  ReplicaSet → Deployment): the processing stage adds constant helper fields
+  `k8s_otel.replicaset_kind` / `k8s_otel.deployment_kind`, and
+  `enrich-k8s-replicaset-owner` / `enrich-k8s-deployment-owner` hash them in
+  place of the record's own kind. They're ID inputs only; they stay on stored
+  records because the storage stage only allows `bucketAssignment`/`noStorage`.
+* Static pods (kube-proxy): `kubeletstats` reports the kubelet config-hash UID.
+  `transform/static_pod_uid` (DaemonSet) drops it, so `k8sattributes` re-fills
+  the API UID by name + namespace. Without that, pod/container IDs on those
+  metrics point at entities that don't exist.
+* CONTAINER: `k8s.cluster.uid`, `k8s.pod.uid`, `k8s.container.name`.
+* Cluster/namespace/node/pod/service: component name == field name.
+
+### Logs: routed by rule
+
+Logs need `openpipeline/k8s-logs-routing.yaml`, applied with
 `dtctl apply -f openpipeline/k8s-logs-routing.yaml --plain`. Its `pipelineId`
 *is* an objectId and must be re-resolved if the extension is installed into a
 different environment.
@@ -108,9 +130,6 @@ different environment.
 extension execution path (EEC). This collector pushes straight to
 `/api/v2/otlp/v1/logs`, so its logs arrive on the built-in OTLP source and must
 be routed by rule.
-
-Metrics behave differently in practice and do match the bundled source, which is
-why there is no metrics routing rule.
 
 This was verified the hard way — setting `dt.openpipeline.source` on logs to the
 bare name, to the `extension:`-prefixed name, and adding
@@ -127,26 +146,6 @@ fetch logs, from:now()-5m | filter event.provider == "KUBERNETES_OTEL_TOPO"
 
 DT normalizes a logs-scope ingest source to `extension:<name>` on store — that is
 cosmetic and true of every extension, not a bug.
-
-### Metrics modes (post-install, no rebuild)
-
-The metrics ingest source targets `k8s-otel-metrics-enrichment` by default.
-Both toggles are edits to that one settings object, in the DT OpenPipeline UI or
-via `dtctl`:
-
-* **Enrichment (default)** — attaches `dt.smartscape.*` entity IDs to metric data
-  points without creating entities. Entity creation is the logs pipeline's job.
-* **Extraction** — repoint `staticRouting.pipelineId` to
-  `k8s-otel-metrics-extraction` to also create nodes/edges from metrics. Useful
-  when the topology pull is unavailable, or to fill the 120s gap between pulls.
-  Writes fewer entity properties than the logs pipeline (no `k8s.object`,
-  `k8s.pod.phase`, `k8s.node.system_uuid`).
-* **Off** — set `enabled: false` on the metrics ingest source.
-
-Inspect the live state with:
-```bash
-dtctl get settings --schema builtin:openpipeline.metrics.ingest-sources --plain
-```
 
 ### Spans
 

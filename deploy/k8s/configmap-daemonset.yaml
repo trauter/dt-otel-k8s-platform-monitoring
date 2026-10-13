@@ -45,14 +45,10 @@ data:
                 - source_labels: [container]
                   regex: '^$|^POD$'
                   action: drop
-                # Strip _total suffix so the Prometheus receiver ingests these as Gauge
-                # rather than Sum[monotonic]. Dynatrace's OTLP endpoint on this tenant
-                # silently drops Sum[monotonic] metrics; storing as Gauge with cumulative
-                # semantics is a known workaround (use derivative() in DQL for rates).
-                - source_labels: [__name__]
-                  regex: '(.+)_total'
-                  target_label: __name__
-                  replacement: '$$1'
+                # No _total stripping here. These names keep their Prometheus _total
+                # suffix and therefore arrive as Sum[monotonic]; the cumulativetodelta
+                # processor in the metrics/cadvisor pipeline converts them to delta,
+                # which Dynatrace accepts. See that processor for the full reasoning.
     
     processors:
       memory_limiter:
@@ -80,6 +76,23 @@ data:
           - sources:
               - from: resource_attribute
                 name: k8s.pod.uid
+          # Static pods: transform/static_pod_uid drops the kubelet's config-hash UID,
+          # so fall back to name+namespace and let k8s.pod.uid be filled with the
+          # mirror pod's API UID (the one the topology pull and k8s_cluster use).
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.name
+              - from: resource_attribute
+                name: k8s.namespace.name
+    
+      # kubeletstats reports static pods (e.g. kube-proxy) under the kubelet's internal
+      # UID — the 32-hex config hash — not the API UID. Smartscape pod/container IDs
+      # hash k8s.pod.uid, so those data points would point at entities that don't exist.
+      transform/static_pod_uid:
+        metric_statements:
+          - context: resource
+            statements:
+              - delete_key(attributes, "k8s.pod.uid") where attributes["k8s.pod.uid"] != nil and IsMatch(attributes["k8s.pod.uid"], "^[0-9a-f]{32}$")
     
       transform/workload_dims:
         metric_statements:
@@ -123,12 +136,52 @@ data:
               - delete_key(attributes, "instance")
           - context: metric
             statements:
-              # Names arrive without _total (stripped by Prometheus relabeling above).
-              - set(name, "container.cpu.cfs.throttled.time")    where name == "container_cpu_cfs_throttled_seconds"
-              - set(name, "container.cpu.cfs.throttled.periods") where name == "container_cpu_cfs_throttled_periods"
-              - set(name, "container.cpu.cfs.periods")           where name == "container_cpu_cfs_periods"
-              - set(name, "container.cpu.usage.cadvisor")        where name == "container_cpu_usage_seconds"
+              # Names arrive with the Prometheus _total suffix intact. The receiver's
+              # trim_metric_suffixes option defaults to false (prometheusreceiver
+              # v0.153.0 appendable.go/metricfamily.go), so nothing normalises the
+              # suffix away once the relabel-based strip is gone. Confirmed against
+              # the debug exporter on this cluster.
+              - set(name, "container.cpu.cfs.throttled.time")    where name == "container_cpu_cfs_throttled_seconds_total"
+              - set(name, "container.cpu.cfs.throttled.periods") where name == "container_cpu_cfs_throttled_periods_total"
+              - set(name, "container.cpu.cfs.periods")           where name == "container_cpu_cfs_periods_total"
+              - set(name, "container.cpu.usage.cadvisor")        where name == "container_cpu_usage_seconds_total"
     
+      # Dynatrace's OTLP metrics endpoint silently drops Sum[monotonic] (cumulative
+      # counter) metrics: no error is raised anywhere, the data simply never lands in
+      # Grail. Converting them to delta temporality makes them ingestible.
+      # Confirmed empirically on this tenant -- over a 2h window the Gauge
+      # k8s.pod.cpu.usage arrived (58 pts) while its Sum[monotonic] twin
+      # k8s.pod.cpu.time, plus k8s.pod.network.io, k8s.pod.network.errors and
+      # container.cpu.time, were entirely absent. config/host.yaml already relies on
+      # this processor, and its monotonic sums (system.cpu.time, process.cpu.time) do
+      # arrive.
+      #
+      # Used by metrics/cadvisor too. That pipeline used to dodge the drop by
+      # stripping the _total suffix in metric_relabel_configs, which makes the
+      # Prometheus receiver emit Gauge instead of Sum[monotonic]. That Gauge still
+      # carried a cumulative value, and nothing downstream can difference it, so
+      # consumers could only compute lifetime averages -- container.cpu_throttled in
+      # the legacy ActiveGate module is a windowed percentage (3-98% live), while the
+      # stripped Gauges could only yield a flat lifetime 1.74% on this cluster. Delta
+      # conversion gives per-interval values, so the ratio is windowed and
+      # comparable. A single processor definition is enough: the collector
+      # instantiates processors per pipeline, so the two pipelines keep independent
+      # delta state despite sharing this config block.
+      #
+      # Non-monotonic sums and gauges are passed through untouched, so this is a
+      # no-op for every other metric in this pipeline.
+      #
+      # max_staleness is deliberately far shorter than host.yaml's 25h. host.yaml
+      # needs 25h because it has a 1h-interval hostmetrics scraper whose state must
+      # survive gaps > 1h. kubeletstats scrapes every 60s and its series are pod- and
+      # container-scoped, so 25h would pin per-series state for every pod that has
+      # since been deleted -- unbounded growth against the 256 MiB memory_limiter.
+      # 5m tolerates ~4 missed scrapes, which is all this interval needs. cAdvisor
+      # scrapes at the same 60s interval with the same container-scoped churn, so
+      # the same 5m applies there.
+      cumulativetodelta:
+        max_staleness: 5m
+
       batch:
         timeout: 10s
         send_batch_size: 1000
@@ -146,9 +199,9 @@ data:
       pipelines:
         metrics/kubeletstats:
           receivers: [kubeletstats]
-          processors: [memory_limiter, k8sattributes, transform/workload_dims, batch]
+          processors: [memory_limiter, transform/static_pod_uid, k8sattributes, transform/workload_dims, cumulativetodelta, batch]
           exporters: [otlphttp, debug]
         metrics/cadvisor:
           receivers: [prometheus/cadvisor]
-          processors: [memory_limiter, transform/cadvisor, batch]
+          processors: [memory_limiter, transform/cadvisor, cumulativetodelta, batch]
           exporters: [otlphttp, debug]

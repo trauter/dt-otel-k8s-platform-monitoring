@@ -45,13 +45,13 @@ flowchart TB
             R2["k8s_objects/topology<br/>pull, 120s"]
             R3["k8s_objects/events<br/>watch"]
 
-            P1["transform/workload_dims<br/>transform/openpipeline_source_metrics"]
+            P1["transform/workload_dims"]
             P2["transform/topology → groupbyattrs/pod →<br/>k8sattributes → dtk8stopology →<br/>transform/openpipeline_source_logs"]
             P3["transform/k8sevents → dtk8seventsprocessor →<br/>transform/openpipeline_source_logs"]
         end
 
         subgraph DS["dt-otelcol-agent (DaemonSet)"]
-            R4["kubeletstats / hostmetrics"]
+            R4["kubeletstats → transform/static_pod_uid →<br/>k8sattributes / hostmetrics"]
         end
     end
 
@@ -62,13 +62,15 @@ flowchart TB
         end
 
         subgraph ROUTE["Routing"]
-            SRC["metrics ingest source<br/><i>bundled in extension</i>"]
             RULE["logs routing rule<br/><i>k8s-logs-routing.yaml</i>"]
         end
 
         subgraph PIPE["OpenPipeline — bundled in the extension"]
             PL["k8s-otel-logs<br/>10 entity processors<br/>+ kubernetes.events counter"]
-            PE["k8s-otel-metrics-enrichment"]
+        end
+
+        subgraph BUILTIN["OpenPipeline — built-in"]
+            PE["default OTel metrics enrichment"]
         end
 
         subgraph OUT["Output"]
@@ -84,28 +86,21 @@ flowchart TB
     R3 --> P3 --> E2
     R4 --> E1
 
-    E1 --> SRC --> PE --> MET
+    E1 --> PE --> MET
     E2 --> RULE --> PL
     PL --> SS & LOG & MET
 ```
 
-The diagram shows the live path only. Two things deliberately left out: the
-`k8s-otel-metrics-extraction` pipeline, which ships in the extension but is not
-routed by default (see [Metrics modes](#metrics-modes)), and the logs ingest
-source, which is not shipped at all (see the Known issue above).
+Metrics need no extension pipeline: DT's built-in OTel metrics enrichment
+attaches `dt.smartscape.*` IDs to k8s metric data points on its own. The logs
+ingest source is deliberately not shipped (see the Known issue above).
 
-## The routing asymmetry
+## Logs routing
 
-The two signals reach their pipelines by different mechanisms. Metrics use the
-intended design; logs use the workaround described in the Known issue above.
-
-| | Metrics ✅ | Logs ⚠️ |
-|---|---|---|
-| Mechanism | ingest source bundled in the extension | **custom dynamic routing rule**, applied with `dtctl` |
-| Matches on | `dt.openpipeline.source` claimed by the source | rule matcher reading `dt.openpipeline.source` |
-| References pipeline by | `customId` — stable | `objectId` — must be re-resolved per environment |
-| Lives in | `extension/src/openpipeline/metrics.source.json` | `openpipeline/k8s-logs-routing.yaml` |
-| Ships with the extension | yes | no — separate apply step |
+Only logs are routed by the extension's config, and they need a **custom
+dynamic routing rule** (`openpipeline/k8s-logs-routing.yaml`, applied with
+`dtctl`) rather than an ingest source — see the Known issue above. The rule
+references the pipeline by `objectId`, which must be re-resolved per environment.
 
 The collector still stamps `dt.openpipeline.source` on logs — not because an
 ingest source can use it, but because the *routing rule* matches on it. That
@@ -135,19 +130,6 @@ fetch logs, from:now()-5m | filter event.provider == "KUBERNETES_OTEL_TOPO"
 `logs:k8s-otel-logs` means the workaround is working; `logs:default` means it is
 not.
 
-## Metrics modes
-
-The metrics ingest source targets `k8s-otel-metrics-enrichment` by default.
-Both changes below are edits to that one settings object in Dynatrace — no
-redeploy, no extension rebuild:
-
-- **Enrichment (default)** — attaches `dt.smartscape.*` IDs to data points.
-  Entity creation is the logs pipeline's job.
-- **Extraction** — repoint `staticRouting.pipelineId` at
-  `k8s-otel-metrics-extraction` to create entities from metrics too. Useful when
-  the topology pull is unavailable, or to cover the 120s gap between pulls.
-- **Off** — set `enabled: false`.
-
 ## Entity model
 
 ```mermaid
@@ -167,14 +149,51 @@ flowchart LR
     POD -->|belongs_to| C & NS
     POD -->|runs_on| ND
     POD -->|is_part_of| W
-    CON -->|is_part_of| POD
+    CON -->|is_part_of| POD & W
+    W -->|"is_part_of (RS → Deployment)"| W
     CON -->|belongs_to| C & NS
     CON -->|runs_on| ND
 ```
 
-Entity IDs are derived from `idComponents` — changing those changes every ID, so
-they must stay identical across the logs and metrics pipelines or the same
-object would produce two entities.
+Entity IDs are hashed from `idComponents` (the component *name* and the value).
+The logs pipeline must use exactly the components DT's built-in metrics
+enrichment uses, or the IDs on metric data points will point at entities that
+don't exist:
+
+| Type | idComponents (name ← field) |
+|---|---|
+| `K8S_CLUSTER` | `k8s.cluster.uid` |
+| `K8S_NAMESPACE` / `K8S_NODE` / `K8S_SERVICE` | `k8s.cluster.uid`, `k8s.<type>.name` |
+| `K8S_DEPLOYMENT` / `STATEFULSET` / `DAEMONSET` / `REPLICASET` | `k8s.cluster.uid`, `k8s.namespace.name`, **`k8s.workload.kind`**, **`k8s.workload.name`** |
+| `K8S_POD` | `k8s.cluster.uid`, `k8s.pod.uid` |
+| `CONTAINER` | `k8s.cluster.uid`, `k8s.pod.uid`, `k8s.container.name` |
+
+Workload IDs hash the record's `k8s.workload.kind` and `k8s.workload.name`, so
+each workload processor matches only `k8s.workload.kind == "<type>"`.
+
+Some records also need the ID of an *owner* of a different kind, for an
+`is_part_of` edge. A deployment-owned pod or container record has kind
+`deployment` but needs its ReplicaSet's ID. A ReplicaSet record (whose
+`k8s.deployment.name` the collector sets from `ownerReferences`) has kind
+`replicaset` but needs its Deployment's ID. ID components can only reference
+fields, so the processing stage adds constants for the hash:
+
+| Helper field | Added where | Used by |
+|---|---|---|
+| `k8s_otel.replicaset_kind = "replicaset"` | `k8s.replicaset.name` set, kind ≠ replicaset | `enrich-k8s-replicaset-owner` |
+| `k8s_otel.deployment_kind = "deployment"` | `k8s.deployment.name` set, kind ≠ deployment | `enrich-k8s-deployment-owner` |
+
+These fields are ID inputs only. They stay on stored topology records, because
+the storage stage allows only `bucketAssignment`/`noStorage`.
+
+Pod, container and ReplicaSet edges match the ActiveGate model. Known gap: no
+Job/CronJob/ConfigMap/Secret/PVC entities, so the pod edges to them are missing.
+
+Static pods (e.g. `kube-proxy`) need a fix on the metrics side as well: `kubeletstats`
+reports them under the kubelet's config-hash UID, not the mirror pod's API UID,
+so their pod/container IDs would point at entities that don't exist.
+`transform/static_pod_uid` drops the hash UID, and `k8sattributes` re-fills
+`k8s.pod.uid` by pod name + namespace.
 
 `CONTAINER` is the native Dynatrace type, not a custom one. `k8s.object` (the
 full serialized API object) is extracted for every type except `CONTAINER` and
